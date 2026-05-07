@@ -5,6 +5,8 @@ import (
 	"os"
 
 	"charm.land/bubbles/v2/list"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
@@ -22,6 +24,11 @@ const (
 /* MODEL MANAGEMENT */
 var models []tea.Model
 
+const (
+	model status = iota
+	form
+)
+
 /* STYLING */
 var (
 	columnStyle = lipgloss.NewStyle().
@@ -38,6 +45,10 @@ type Task struct {
 	status      status
 	title       string
 	description string
+}
+
+func NewTask(status status, title, description string) Task {
+	return Task{status: status, title: title, description: description}
 }
 
 func (t *Task) Next() {
@@ -99,12 +110,40 @@ func (m *Model) Prev() {
 	}
 }
 
+// func (m *Model) MoveToNext() tea.Msg {
+// 	selectedItem := m.lists[m.focused].SelectedItem()
+// 	selectedTask := selectedItem.(Task)
+// 	m.lists[selectedTask.status].RemoveItem(m.lists[m.focused].Index())
+// 	selectedTask.Next()
+// 	m.lists[selectedTask.status].InsertItem(len(m.lists[selectedTask.status].Items())-1, list.Item(selectedTask))
+// 	return nil
+// }
+
 func (m *Model) MoveToNext() tea.Msg {
+	if len(m.lists) == 0 {
+		return nil
+	}
+
 	selectedItem := m.lists[m.focused].SelectedItem()
-	selectedTask := selectedItem.(Task)
-	m.lists[selectedTask.status].RemoveItem(m.lists[m.focused].Index())
+	if selectedItem == nil {
+		return nil
+	}
+
+	selectedTask, ok := selectedItem.(Task)
+	if !ok {
+		return nil
+	}
+
+	from := m.focused
+	to := selectedTask.status
+
+	m.lists[from].RemoveItem(m.lists[from].Index())
+
 	selectedTask.Next()
-	m.lists[selectedTask.status].InsertItem(len(m.lists[selectedTask.status].Items())-1, list.Item(selectedTask))
+
+	dest := &m.lists[to]
+	dest.InsertItem(len(dest.Items()), selectedTask)
+
 	return nil
 }
 
@@ -149,16 +188,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "ctrl-c", "q", "esc":
+		case "ctrl+c", "q", "esc":
 			m.quitting = true
 			return m, tea.Quit
 		case "left", "h":
 			m.Prev()
 		case "right", "l":
 			m.Next()
+		// case "enter":
+		// 	return m, m.MoveToNext
 		case "enter":
-			return m, m.MoveToNext
+			if selectedItem := m.lists[m.focused].SelectedItem(); selectedItem != nil {
+				task, ok := selectedItem.(Task)
+				if ok {
+					from := m.focused
+					to := task.status
+
+					m.lists[from].RemoveItem(m.lists[from].Index())
+					task.Next()
+					m.lists[to].InsertItem(len(m.lists[to].Items()), task)
+				}
+			}
+			return m, nil
+		case "n":
+			models[model] = m
+			models[form] = NewForm(m.focused)
+			return models[form].Update(nil)
 		}
+	case Task:
+		task := msg
+		return m, m.lists[task.status].InsertItem(len(m.lists[task.status].Items()), task)
 	}
 
 	if !m.loaded || len(m.lists) == 0 {
@@ -206,8 +265,65 @@ func (m Model) View() tea.View {
 	}
 }
 
+/* FORM MODEL */
+type Form struct {
+	focused     status
+	title       textinput.Model
+	description textarea.Model
+}
+
+func NewForm(focused status) *Form {
+	form := &Form{}
+	form.focused = focused
+	form.title = textinput.New()
+	form.title.Focus()
+	form.description = textarea.New()
+	return form
+}
+
+func (m Form) CreateTask() tea.Msg {
+	task := NewTask(m.focused, m.title.Value(), m.description.Value())
+	return task
+}
+
+func (m Form) Init() tea.Cmd {
+	return nil
+}
+
+func (m Form) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "q", "ctrl+c":
+			return m, tea.Quit
+		case "enter":
+			if m.title.Focused() {
+				m.title.Blur()
+				m.description.Focus()
+				return m, textinput.Blink
+			} else {
+				models[form] = m
+				return models[model], m.CreateTask
+			}
+		}
+	}
+	if m.title.Focused() {
+		m.title, cmd = m.title.Update(msg)
+		return m, cmd
+	} else {
+		m.description, cmd = m.description.Update(msg)
+		return m, cmd
+	}
+}
+
+func (m Form) View() tea.View {
+	return tea.NewView(lipgloss.JoinVertical(lipgloss.Left, m.title.View(), m.description.View()))
+}
+
 func main() {
-	m := New()
+	models = []tea.Model{New(), NewForm(todo)}
+	m := models[model]
 	p := tea.NewProgram(m)
 	if _, err := p.Run(); err != nil {
 		fmt.Println(err)
